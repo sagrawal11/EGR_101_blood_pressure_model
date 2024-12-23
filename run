@@ -1,8 +1,7 @@
 #include <LiquidCrystal.h>
 #include <FastLED.h>
 
-// Define the buzzer, LED, and LCD pins
-int buzzerPin = 13; //where speaker pin is
+// Define the LCD, LED, and button pins
 #define LED_PIN     6
 #define NUM_LEDS    30
 #define BRIGHTNESS  64
@@ -10,213 +9,287 @@ int buzzerPin = 13; //where speaker pin is
 #define COLOR_ORDER GRB
 LiquidCrystal lcd(12, 11, 5, 4, 3, 2);
 
-// Note definitions
-#define NOTE_C4 262  // Single note to be played
-
-// Blood pressure variables
-int systolicBase = 120;  // Base systolic value for green button
-int diastolicBase = 80;  // Base diastolic value for green button
-
-int systolicBaseOrange = 130; //Base systolic value for orange button
-int diastolicBaseOrange = 90; //Base diastolic value for orange button
-
-int systolicBaseYellow = 135; //Base systolic value for yellow button
-int diastolicBaseYellow = 95; //Base Diastolic value for yellow button
-
-//To be manipulated for each condition
-int systolicReading = 0;
-int diastolicReading = 0;
+// Pressure sensor configuration (define upper and lower)
+#define PRESSURE_SENSOR_PIN A0
+#define PRESSURE_THRESHOLD 692
+#define LOWER_PRESSURE_THRESHOLD 622
 
 // Button pins
-#define BUTTON_PIN_GREEN  7  // Green button pin
-#define BUTTON_PIN_ORANGE 8  // Orange button pin
-#define BUTTON_PIN_YELLOW 9  // Yellow button pin
+#define NORMAL_BUTTON_PIN 7
+#define DIABETES_BUTTON_PIN 8
+#define HEART_BUTTON_PIN 9
 
-// Pressure sensor pin and threshold values
-int pressureAnalogPin = 0; // Pin where the pressure sensor is connected
-int pressureReading;       // Variable for storing the pressure reading
-int pressureThreshold = 750; // Minimum pressure required to activate buttons
-
+// LED and flow control
 CRGB leds[NUM_LEDS];
-unsigned long startTime = 0;
-bool isFlowing = false;   // Flag to indicate if the LED flow is running
-bool yellowPressed = false; // Flag to check if the yellow button was pressed
-bool soundPlaying = false;  // Flag to check if the sound is playing
+bool ledsFlowing = false;
+unsigned long lastFlowUpdate = 0;
+int currentLED = 0;
+int lastLEDState[NUM_LEDS];
 
+// Tracking pressure, systolic, diastolic, etc.
+bool isPressureHigh = false;
+bool pressureReleased = false;
+bool simulationRunning = false;
+bool systolicShown = false;
+bool diastolicShown = false;
+bool simulationComplete = false;
+bool isHeartDisease = false;
+bool finalFlowStarted = false;
 
-// Delay values for different button speeds (in milliseconds)
-unsigned long flowSpeed = 100;  // Default speed (Green button)
+// Timing variables for delays
+unsigned long pressureReleaseTime = 0;
+unsigned long systolicDisplayTime = 1000;
+unsigned long diastolicDisplayTime = 0;
+unsigned long diastolicClearTime = 5000;
+unsigned long finalFlowTime = 5000;
 
-// Setup function
+// Base blood pressure reading values
+const int BASE_NORMAL_SYSTOLIC = 120;
+const int BASE_NORMAL_DIASTOLIC = 80;
+const int BASE_DIABETES_SYSTOLIC = 135;
+const int BASE_DIABETES_DIASTOLIC = 85;
+const int BASE_HEART_SYSTOLIC = 140;
+const int BASE_HEART_DIASTOLIC = 90;
+
+// Current blood pressure readings 
+int systolicReading;
+int diastolicReading;
+
+// Speed settings
+unsigned long normalFlowSpeed = 200;
+unsigned long diabetesFlowSpeed = 100;
+unsigned long heartFlowSpeed = 75;
+unsigned long currentBaseSpeed;
+unsigned long flowSpeed;
+
+// Function to add random variation
+int addRandomVariation(int baseValue) {
+ return baseValue + random(-2, 3); // random(-2, 3) gives values from -2 to +2 to randomize the values
+}
+
+void updateLEDFlow();
+void displayDiastolic();
+void turnOffLEDs();
+void setReadings(int systolic, int diastolic);
+void startSimulation();
+void applyPressure();
+void releasePressure();
+void displaySystolic();
+void resetSimulation();
+
 void setup() {
-   // Set up buttons as inputs
-   pinMode(BUTTON_PIN_GREEN, INPUT);  
-   pinMode(BUTTON_PIN_ORANGE, INPUT); 
-   pinMode(BUTTON_PIN_YELLOW, INPUT); 
-   pinMode(buzzerPin, OUTPUT); // Set up buzzer pin as output to button (input)
+ pinMode(NORMAL_BUTTON_PIN, INPUT);
+ pinMode(DIABETES_BUTTON_PIN, INPUT);
+ pinMode(HEART_BUTTON_PIN, INPUT);
 
-   // Initialize the LCD display
-   lcd.begin(16, 2);  // Set to 16x2 for most standard LCDs
-   delay(200);        // Small delay to let the LCD initialize
+ lcd.begin(16, 2);
+ Serial.begin(9600);
+ randomSeed(analogRead(A1)); 
+ 
+ FastLED.addLeds<LED_TYPE, LED_PIN, COLOR_ORDER>(leds, NUM_LEDS).setCorrection(TypicalLEDStrip);
+ FastLED.setBrightness(BRIGHTNESS);
 
-   // Set up serial communication for pressure sensor
-   Serial.begin(9600);
-
-   delay(3000); // Power-up safety delay
-   FastLED.addLeds<LED_TYPE, LED_PIN, COLOR_ORDER>(leds, NUM_LEDS).setCorrection(TypicalLEDStrip);
-   FastLED.setBrightness(BRIGHTNESS);
+ lcd.clear();
+ lcd.print("Select Button"); //first display on the LCS
+ lcd.setCursor(0, 1);
+ lcd.print("to Start!"); //part of first display
+ 
+ FastLED.clear(); //clears when a button is pressed
+ FastLED.show();
 }
 
-// Main loop function
-void loop() 
-{
-   // Read the pressure sensor value
-   pressureReading = analogRead(pressureAnalogPin);
-   Serial.print("Pressure Pad Reading - ");
-   Serial.println(pressureReading);
+void loop() {
+ if (ledsFlowing) {
+   updateLEDFlow();
+ }
 
-   // Check if pressure is above the threshold
-   if (pressureReading >= pressureThreshold) {
-       // Read the state of the buttons
-       int greenButtonState = digitalRead(BUTTON_PIN_GREEN);
-       int orangeButtonState = digitalRead(BUTTON_PIN_ORANGE);
-       int yellowButtonState = digitalRead(BUTTON_PIN_YELLOW);
+ int pressure = analogRead(PRESSURE_SENSOR_PIN);
 
-       // Check for Green button press (10 seconds)
-       if (greenButtonState == HIGH && !isFlowing) {
-           // Generate random blood pressure readings
-           systolicReading = systolicBase + random(-5, 6);  // Systolic within ±5 of 120
-           diastolicReading = diastolicBase + random(-5, 6); // Diastolic within ±5 of 80
-           
-           startTime = millis();  // Record the time when the green button is pressed
-           isFlowing = true;      // Set the flag to indicate the LED flow has started
-           soundPlaying = true;   // Set the flag to indicate the sound is playing
-           yellowPressed = false; // Reset the yellow flag when green button is pressed
-           flowSpeed = 100;       // Default speed for the green button
+ // Button handling
+ if (!simulationRunning && !simulationComplete) {
+   if (digitalRead(NORMAL_BUTTON_PIN) == HIGH) {
+     setReadings(BASE_NORMAL_SYSTOLIC, BASE_NORMAL_DIASTOLIC);
+     currentBaseSpeed = normalFlowSpeed;
+     flowSpeed = currentBaseSpeed;
+     isHeartDisease = false;
+     startSimulation();
+   }
+   if (digitalRead(DIABETES_BUTTON_PIN) == HIGH) {
+     setReadings(BASE_DIABETES_SYSTOLIC, BASE_DIABETES_DIASTOLIC);
+     currentBaseSpeed = diabetesFlowSpeed;
+     flowSpeed = currentBaseSpeed;
+     isHeartDisease = false;
+     startSimulation();
+   }
+   if (digitalRead(HEART_BUTTON_PIN) == HIGH) {
+     setReadings(BASE_HEART_SYSTOLIC, BASE_HEART_DIASTOLIC);
+     currentBaseSpeed = heartFlowSpeed;
+     flowSpeed = currentBaseSpeed;
+     isHeartDisease = true;
+     startSimulation();
+   }
+ }
 
-           // Start playing the note
-           tone(buzzerPin, NOTE_C4);
-           
-           // Display the systolic value
-           lcd.clear();   
-           lcd.clear();            // Clear the display
-           lcd.setCursor(0, 0);       // Set cursor to the first line
-           lcd.print("Systolic:");     // Print label
-           lcd.setCursor(0, 1);       // Move to the second line
-           lcd.print(systolicReading); // Print the systolic reading
-           delay(1000);               // Delay for readability
+ // If pressure is greater than threshold, stop LEDs
+ if (pressure >= PRESSURE_THRESHOLD && !isPressureHigh && simulationRunning) {
+   applyPressure();
+ }
+ //If pressure less than lower threshold, start LEDs gradually
+ if (pressure < PRESSURE_THRESHOLD && !pressure < LOWER_PRESSURE_THRESHOLD && isPressureHigh && simulationRunning) {
+   ledsFlowing = false;
+ }
 
-           // Start LED flow and sound simultaneously
-           runFlow(10000, 18);        // Run for 10 seconds with flow limit at LED 18
-       }
+ if (pressure < LOWER_PRESSURE_THRESHOLD && isPressureHigh && simulationRunning) {
+   releasePressure();
+ }
 
-       // Check for Orange button press (5 seconds)
-       if (orangeButtonState == HIGH && !isFlowing) 
-       {
-           systolicReading = systolicBaseOrange + random(-5, 6);  // Systolic within ±5 of 130
-           diastolicReading = diastolicBaseOrange + random(-5, 6); // Diastolic within ±5 of 90
+ // Display readings on the LCD screen
+ if (pressureReleased && millis() - pressureReleaseTime >= systolicDisplayTime && !systolicShown) {
+   displaySystolic();
+ }
 
-           startTime = millis();  // Record the time when the orange button is pressed
-           isFlowing = true;      // Set the flag to indicate the LED flow has started
-           yellowPressed = false; // Reset the yellow flag when orange button is pressed
-           flowSpeed = 150;       // Faster speed to avoid lingering
+ if (pressureReleased && flowSpeed == currentBaseSpeed && !diastolicShown) {
+   displayDiastolic();
+ }
 
-           //Play the speaker's sound
-           tone(buzzerPin, NOTE_C4);
+ // Handle diastolic values, clear the LCD, and allow flow for some time after diastolic is displayed
+ if (diastolicShown) {
+   unsigned long timeElapsed = millis() - diastolicDisplayTime;
+   
+   if (timeElapsed >= diastolicClearTime && !finalFlowStarted) {
+     lcd.clear();
+     finalFlowStarted = true;
+     ledsFlowing = true;
+   }
+   
+   if (finalFlowStarted && timeElapsed >= (diastolicClearTime + finalFlowTime)) {
+     turnOffLEDs();
+   }
+ }
 
-           //Displaying systolic 
-           lcd.clear();
-           lcd.setCursor(0,0);
-           lcd.print("Systolic:");
-           lcd.setCursor(0,1);
-           lcd.print(systolicReading);
-           delay(1000);
+ // Reset simulation
+ if (simulationComplete && (digitalRead(NORMAL_BUTTON_PIN) == HIGH || 
+     digitalRead(DIABETES_BUTTON_PIN) == HIGH || 
+     digitalRead(HEART_BUTTON_PIN) == HIGH)) {
+   resetSimulation();
+ }
+}
 
+void updateLEDFlow() {
+ if (pressureReleased && flowSpeed > currentBaseSpeed) {
+   unsigned long elapsed = millis() - pressureReleaseTime;
+   unsigned long transitionDuration = 9000;
+   float progress = min(1.0, (float)elapsed / transitionDuration);
+   flowSpeed = currentBaseSpeed * 3 - progress * (currentBaseSpeed * 2);
+ }
 
+ if (millis() - lastFlowUpdate >= flowSpeed) {
+   for (int i = 0; i < NUM_LEDS; i++) {
+     lastLEDState[i] = leds[i].r;
+   }
 
-           runFlow(10000, 18);     // Run for 10 seconds with flow limit at LED 18
-       }
-
-       // Check for Yellow button press (turn on the yellow light and run flow for 10 seconds)
-       if (yellowButtonState == HIGH && !yellowPressed && !isFlowing) 
-       {
-           systolicReading = systolicBaseYellow + random(-5, 6);
-           diastolicReading = diastolicBaseYellow + random(-5, 6);
-           startTime = millis();  // Record the time when the yellow button is pressed
-           yellowPressed = true;  // Set the flag to indicate yellow button was pressed
-           isFlowing = true;      // Set the flag to indicate the LED flow has started
-           flowSpeed = 200;       // Slowest speed for the yellow button
-
-           tone(buzzerPin, NOTE_C4);
-
-           //Display Systolic for Yellow
-           lcd.clear();
-           lcd.setCursor(0,0);
-           lcd.print("Systolic:");
-           lcd.setCursor(0,1);
-           lcd.print(systolicReading);
-           delay(1000);
-
-           runFlow(10000, 20);    // Run for 10 seconds with flow limit at LED 20 (extended)
-       }
-
-       // Reset the flow if it's done
-       if (isFlowing && millis() - startTime >= 10000) {
-           isFlowing = false;  // Reset flow
-           soundPlaying = false;  // Reset sound playing flag
-           noTone(buzzerPin);  // Stop the sound
-           FastLED.clear();    // Turn off all LEDs
-           FastLED.show();
-
-           // Display the diastolic value after sound stops
-           lcd.clear();               // Clear the display
-           lcd.setCursor(0, 0);       // Set cursor to the first line
-           lcd.print("Diastolic:");    // Print label
-           lcd.setCursor(0, 1);       // Move to the second line
-           lcd.print(diastolicReading); // Print the diastolic reading
-           delay(5000);               // Delay for readability
-           lcd.clear();
-       }
+   FastLED.clear();
+   
+   if (isHeartDisease) {
+     int middleLED = NUM_LEDS / 2;
+     leds[middleLED] = CRGB::Yellow;
+     
+     if (currentLED < middleLED - 2) {
+       leds[currentLED] = CRGB::Red;
+       leds[currentLED + 1] = CRGB::Red;
+       leds[currentLED + 2] = CRGB::Red;
+     }
+     
+     currentLED = (currentLED + 1) % (middleLED - 2);
    } else {
-       // If the pressure is below the threshold, turn off LEDs
-       FastLED.clear();
-       FastLED.show();
+     leds[currentLED] = CRGB::Red;
+     leds[(currentLED + 1) % NUM_LEDS] = CRGB::Red;
+     leds[(currentLED + 2) % NUM_LEDS] = CRGB::Red;
+     currentLED = (currentLED + 1) % NUM_LEDS;
    }
-
-   delay(100); // Small delay to slow down pressure reading updates
+   
+   FastLED.show();
+   lastFlowUpdate = millis();
+ }
 }
 
-// Function to run the flowing LED effect for a set amount of time
-void runFlow(unsigned long duration, int maxLEDIndex) {
-   int currentLED = 0;
+void setReadings(int baseSystolic, int baseDiastolic) {
+ // Add random variation when settings readings
+ systolicReading = addRandomVariation(baseSystolic);
+ diastolicReading = addRandomVariation(baseDiastolic);
+}
 
-   while (millis() - startTime < duration) {
-       FastLED.clear();  // Clear all LEDs at the start of each loop
+void startSimulation() {
+ lcd.clear();
+ lcd.print("Pump pressure");
+ lcd.setCursor(0, 1);
+ lcd.print("cuff");
+ ledsFlowing = true;
+ simulationRunning = true;
+ systolicShown = false;
+ diastolicShown = false;
+ finalFlowStarted = false;
+}
 
-       // Calculate LED indices for the three consecutive red LEDs
-       int ledIndex1 = currentLED % (maxLEDIndex + 1);      // First red LED index
-       int ledIndex2 = (currentLED + 1) % (maxLEDIndex + 1); // Second red LED index
-       int ledIndex3 = (currentLED + 2) % (maxLEDIndex + 1); // Third red LED index
+void displayDiastolic() {
+ lcd.clear();
+ lcd.print("Diastolic:");
+ lcd.setCursor(0, 1);
+ lcd.print(diastolicReading);
+ diastolicShown = true;
+ diastolicDisplayTime = millis();
+ 
+ flowSpeed = currentBaseSpeed;
+ simulationComplete = true;
+ simulationRunning = false;
+}
 
-       // Light up the three LEDs for flowing effect
-       leds[ledIndex1] = CRGB::Red;
-       leds[ledIndex2] = CRGB::Red;
-       leds[ledIndex3] = CRGB::Red;
+void turnOffLEDs() {
+ FastLED.clear();
+ FastLED.show();
+ ledsFlowing = false;
+}
 
-       // If yellow button is pressed, ensure the 21st LED is yellow and flow extends by one LED
-       if (yellowPressed) {
-           leds[21] = CRGB::Yellow;  // Only turn on the yellow LED at the last position
-       } else {
-           leds[21] = CRGB::Black;   // Otherwise, keep it off
-       }
+void applyPressure() {
+ isPressureHigh = true;
+ ledsFlowing = false;
+ lcd.clear();
+ lcd.print("Release valve");
+ lcd.setCursor(0, 1);
+ lcd.print("slowly");
+}
 
-       FastLED.show();
-       FastLED.delay(flowSpeed);  // Adjust the delay based on the button speed
+void releasePressure() {
+ isPressureHigh = false;
+ pressureReleaseTime = millis();
+ pressureReleased = true;
+ ledsFlowing = true;
+ flowSpeed = currentBaseSpeed * 3;
+}
 
-       // Move to the next position
-       currentLED++;
-       if (currentLED > maxLEDIndex) {  // Reset position to avoid going past the designated maximum
-           currentLED = 0;
-       }
-   }
+void displaySystolic() {
+ lcd.clear();
+ lcd.print("Systolic:");
+ lcd.setCursor(0, 1);
+ lcd.print(systolicReading);
+ systolicShown = true;
+}
+
+void resetSimulation() {
+ lcd.clear();
+ lcd.print("Select Button");
+ lcd.setCursor(0, 1);
+ lcd.print("to Start!");
+ 
+ ledsFlowing = false;
+ FastLED.clear();
+ FastLED.show();
+ currentLED = 0;
+ simulationComplete = false;
+ simulationRunning = false;
+ pressureReleased = false;
+ systolicShown = false;
+ diastolicShown = false;
+ isHeartDisease = false;
+ finalFlowStarted = false;
 }
