@@ -1,0 +1,52 @@
+#include <FastLED.h>
+
+
+#define LED_PIN     5
+#define NUM_LEDS    30
+#define BRIGHTNESS  64
+#define LED_TYPE    WS2811
+#define COLOR_ORDER GRB
+CRGB leds[NUM_LEDS];
+
+
+void setup() {
+   delay(3000); // power-up safety delay
+   FastLED.addLeds<LED_TYPE, LED_PIN, COLOR_ORDER>(leds, NUM_LEDS).setCorrection(TypicalLEDStrip);
+   FastLED.setBrightness(BRIGHTNESS);
+}
+
+
+void loop() {
+   // Flowing red light effect
+   for (int i = 0; i < 21; i++) {
+       // Turn the current LED red
+       leds[i] = CRGB::Red;
+    //   leds[i+1] = CRGB::Red;
+   //    leds[i+2] = CRGB::Red;
+       leds[20] = CRGB::Yellow;
+
+
+
+
+       // Turn the previous LED off to create a flowing effect
+       if (i > 0) {
+           leds[i - 1] = CRGB::Black;
+       } else {
+           leds[NUM_LEDS - 1] = CRGB::Black;  // Wrap around for the first LED
+       }
+
+
+/**for (int i = 0; i < 21; i++)
+       {
+         leds[i] = CRGB::Red;
+         leds[i+1] = CRGB::Red;
+         leds[i+2] = CRGB::Red;
+         leds[20] = CRGB::Yellow;
+       }
+       */
+
+
+       FastLED.show();
+       FastLED.delay(100);  // Adjust this to change the speed of the flow
+   }
+}
