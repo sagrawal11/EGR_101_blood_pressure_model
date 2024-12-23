@@ -1,52 +1,161 @@
+#include <LiquidCrystal.h>
 #include <FastLED.h>
 
-
-#define LED_PIN     5
+int buzzerPin = 13;
+#define LED_PIN     6
 #define NUM_LEDS    30
 #define BRIGHTNESS  64
 #define LED_TYPE    WS2811
 #define COLOR_ORDER GRB
-CRGB leds[NUM_LEDS];
+LiquidCrystal lcd(12, 11, 5, 4, 3, 2);
 
+#define NOTE_C4 262
+
+int systolicBase = 120;
+int diastolicBase = 80;
+int systolicReading = 0;
+int diastolicReading = 0;
+
+#define BUTTON_PIN_GREEN  7  
+#define BUTTON_PIN_ORANGE 8  
+#define BUTTON_PIN_YELLOW 9  
+
+int pressureAnalogPin = 0;
+int pressureReading;
+int greenThreshold = 750;
+int orangeThreshold = 800;
+int yellowThreshold = 850;
+
+CRGB leds[NUM_LEDS];
+unsigned long startTime = 0;
+bool isFlowing = false;
+bool yellowPressed = false;
+bool soundPlaying = false;
+unsigned long flowSpeed = 100;
 
 void setup() {
-   delay(3000); // power-up safety delay
+   pinMode(BUTTON_PIN_GREEN, INPUT);  
+   pinMode(BUTTON_PIN_ORANGE, INPUT); 
+   pinMode(BUTTON_PIN_YELLOW, INPUT); 
+   pinMode(buzzerPin, OUTPUT);
+
+   lcd.begin(16, 2);
+   delay(500);
+
+   Serial.begin(9600);
+   delay(3000);
+
    FastLED.addLeds<LED_TYPE, LED_PIN, COLOR_ORDER>(leds, NUM_LEDS).setCorrection(TypicalLEDStrip);
    FastLED.setBrightness(BRIGHTNESS);
+
+   Serial.println("Setup complete.");
 }
 
-
 void loop() {
-   // Flowing red light effect
-   for (int i = 0; i < 21; i++) {
-       // Turn the current LED red
-       leds[i] = CRGB::Red;
-    //   leds[i+1] = CRGB::Red;
-   //    leds[i+2] = CRGB::Red;
-       leds[20] = CRGB::Yellow;
+   pressureReading = analogRead(pressureAnalogPin);
+   Serial.print("Pressure Pad Reading - ");
+   Serial.println(pressureReading);
 
+   int greenButtonState = digitalRead(BUTTON_PIN_GREEN);
+   int orangeButtonState = digitalRead(BUTTON_PIN_ORANGE);
+   int yellowButtonState = digitalRead(BUTTON_PIN_YELLOW);
 
+   yellowPressed = false;  // Reset yellowPressed flag unless the yellow button condition is met
 
+   if (pressureReading >= greenThreshold && greenButtonState == HIGH && !isFlowing) {
+       systolicReading = systolicBase + random(-5, 6);
+       diastolicReading = diastolicBase + random(-5, 6);
 
-       // Turn the previous LED off to create a flowing effect
-       if (i > 0) {
-           leds[i - 1] = CRGB::Black;
+       Serial.print("Systolic: ");
+       Serial.println(systolicReading);
+       Serial.print("Diastolic: ");
+       Serial.println(diastolicReading);
+
+       startFlowWithSound(10000, 18, 100, systolicReading, "Systolic:");
+   }
+
+   if (pressureReading >= orangeThreshold && orangeButtonState == HIGH && !isFlowing) {
+       startFlowWithSound(5000, 18, 150, 0, "");
+   }
+
+   if (pressureReading >= yellowThreshold && yellowButtonState == HIGH && !isFlowing) {
+       yellowPressed = true;  // Set yellowPressed only if yellow button is pressed with the threshold
+       startFlowWithSound(10000, 20, 200, 0, "");
+   }
+
+   if (isFlowing && millis() - startTime >= 10000) {
+       resetFlow();
+   } else if (pressureReading < greenThreshold) {
+       FastLED.clear();
+       FastLED.show();
+   }
+
+   delay(100);
+}
+
+void startFlowWithSound(unsigned long duration, int maxLEDIndex, unsigned long speed, int reading, String label) {
+   startTime = millis();
+   isFlowing = true;
+   soundPlaying = true;
+   flowSpeed = speed;
+
+   if (reading > 0) {
+       lcd.clear();
+       delay(50);
+       lcd.setCursor(0, 0);
+       lcd.print(label);
+       lcd.setCursor(0, 1);
+       lcd.print(reading);
+       delay(1000);
+   }
+
+   tone(buzzerPin, NOTE_C4);
+   runFlow(duration, maxLEDIndex);
+}
+
+void resetFlow() {
+   isFlowing = false;
+   soundPlaying = false;
+   noTone(buzzerPin);
+   FastLED.clear();
+   FastLED.show();
+
+   lcd.clear();
+   delay(50);
+   lcd.setCursor(0, 0);
+   lcd.print("Diastolic:");
+   lcd.setCursor(0, 1);
+   lcd.print(diastolicReading);
+   delay(1000);
+}
+
+void runFlow(unsigned long duration, int maxLEDIndex) {
+   unsigned long flowStart = millis();
+   int currentLED = 0;
+
+   while (millis() - flowStart < duration) {
+       FastLED.clear();
+
+       int ledIndex1 = currentLED % (maxLEDIndex + 1);
+       int ledIndex2 = (currentLED + 1) % (maxLEDIndex + 1);
+       int ledIndex3 = (currentLED + 2) % (maxLEDIndex + 1);
+
+       leds[ledIndex1] = CRGB::Red;
+       leds[ledIndex2] = CRGB::Red;
+       leds[ledIndex3] = CRGB::Red;
+
+       if (yellowPressed) {
+           leds[21] = CRGB::Yellow;
        } else {
-           leds[NUM_LEDS - 1] = CRGB::Black;  // Wrap around for the first LED
+           leds[21] = CRGB::Black;
        }
-
-
-/**for (int i = 0; i < 21; i++)
-       {
-         leds[i] = CRGB::Red;
-         leds[i+1] = CRGB::Red;
-         leds[i+2] = CRGB::Red;
-         leds[20] = CRGB::Yellow;
-       }
-       */
-
 
        FastLED.show();
-       FastLED.delay(100);  // Adjust this to change the speed of the flow
+       FastLED.delay(flowSpeed);
+
+       currentLED++;
+       if (currentLED > maxLEDIndex) {
+           currentLED = 0;
+       }
    }
 }
